@@ -425,6 +425,151 @@ The execution result contains:
 - **`llmContent`:** Raw response parts for the language model's context
 - **`returnDisplay`:** Formatted output for user display (often JSON in markdown code blocks)
 
+## Media Support in MCP Tools
+
+The Gemini CLI fully supports MCP's structured content types, allowing MCP tools to return rich media content including images, audio, video, and PDF documents alongside text responses.
+
+### Supported Content Types
+
+MCP tools can return the following content types as defined in the [MCP specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content):
+
+#### Text Content
+```json
+{
+  "type": "text",
+  "text": "Plain text response"
+}
+```
+
+#### Image Content
+```json
+{
+  "type": "image",
+  "data": "base64-encoded-image-data",
+  "mimeType": "image/png"
+}
+```
+Supported MIME types: `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/svg+xml`, `image/bmp`
+
+#### Audio Content
+```json
+{
+  "type": "audio",
+  "data": "base64-encoded-audio-data",
+  "mimeType": "audio/mp3"
+}
+```
+
+#### Video Content
+```json
+{
+  "type": "video",
+  "data": "base64-encoded-video-data",
+  "mimeType": "video/mp4"
+}
+```
+
+#### PDF Content
+```json
+{
+  "type": "pdf",
+  "data": "base64-encoded-pdf-data",
+  "mimeType": "application/pdf"
+}
+```
+
+#### Resource Content
+```json
+{
+  "type": "resource",
+  "resource": {
+    "uri": "file:///path/to/resource",
+    "text": "Optional text content",
+    "blob": "Optional base64 binary data",
+    "mimeType": "Optional MIME type for blob"
+  }
+}
+```
+
+### Mixed Content Responses
+
+MCP tools can return multiple content items in a single response, enabling rich interactions:
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Here's the chart you requested:"
+    },
+    {
+      "type": "image",
+      "data": "base64-encoded-chart",
+      "mimeType": "image/png"
+    },
+    {
+      "type": "text",
+      "text": "The chart shows a 20% increase in performance."
+    }
+  ]
+}
+```
+
+### Example: Image-Generating MCP Tool
+
+Here's an example of an MCP server that returns images:
+
+```javascript
+// MCP server implementation
+class ChartServer {
+  async handleToolCall(name, args) {
+    if (name === 'create_chart') {
+      const chartData = await generateChart(args.data, args.type);
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Generated ${args.type} chart with ${args.data.length} data points`
+          },
+          {
+            type: 'image',
+            data: chartData.toString('base64'),
+            mimeType: 'image/png'
+          }
+        ]
+      };
+    }
+  }
+}
+```
+
+### How Media Content is Processed
+
+When an MCP tool returns media content:
+
+1. **Content Transformation:** The Gemini CLI automatically transforms MCP media content into a format that the Gemini model can process
+2. **Model Visibility:** Images and other media are made directly visible to the model for analysis and understanding
+3. **Context Preservation:** A context message is added to identify the source MCP server when media is present
+4. **Display Formatting:** The user sees friendly representations like `[Image: image/png]` or `[PDF document]` in the tool output
+
+### Implementation Details
+
+The media support is implemented in the `DiscoveredMCPTool` class with:
+
+- **Backward Compatibility:** Text-only tools continue to work without modification
+- **Validation:** Media content is validated to ensure required fields (`data`, `mimeType`) are present
+- **Error Handling:** Invalid media content is gracefully handled with descriptive error messages
+- **Resource Support:** MCP's resource content type is fully supported for referencing external files
+
+### Best Practices for MCP Tool Developers
+
+1. **Always include MIME types:** Specify the correct `mimeType` for media content
+2. **Use base64 encoding:** Encode binary data as base64 strings
+3. **Combine text and media:** Provide context with text content alongside media
+4. **Handle errors gracefully:** Return error responses using the MCP error format
+5. **Keep media sizes reasonable:** Large media files may impact performance
+
 ## How to interact with your MCP server
 
 ### Using the `/mcp` Command

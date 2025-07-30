@@ -22,6 +22,12 @@ import {
 
 type ToolParams = Record<string, unknown>;
 
+/**
+ * MCP content types that contain media data
+ */
+const MCP_MEDIA_TYPES = ['image', 'pdf', 'audio', 'video'] as const;
+type McpMediaType = typeof MCP_MEDIA_TYPES[number];
+
 export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
   private static readonly allowlist: Set<string> = new Set();
 
@@ -115,11 +121,186 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
     ];
 
     const responseParts: Part[] = await this.mcpTool.callTool(functionCalls);
+    
+    // Transform MCP media content to Gemini format
+    const transformedParts = this.transformMcpResponse(responseParts);
 
     return {
-      llmContent: responseParts,
+      llmContent: transformedParts,
       returnDisplay: getStringifiedResultForDisplay(responseParts),
     };
+  }
+
+  /**
+   * Transforms MCP tool responses to properly handle media content.
+   * Extracts media content as separate inlineData Parts that Gemini can see.
+   * Preserves text content as separate text Parts.
+   * Handles resource content from MCP spec.
+   * Maintains backward compatibility for text-only responses.
+   */
+  private transformMcpResponse(responseParts: Part[]): Part[] {
+    const result: Part[] = [];
+    let hasTransformedContent = false;
+    let currentPartHasMedia = false;
+    let currentPartItems: Part[] = [];
+    
+    // Handle multiple parts (though MCP typically returns single part)
+    for (const part of responseParts) {
+      if (!part.functionResponse) {
+        // Not a function response, keep as-is
+        result.push(part);
+        continue;
+      }
+      
+      const functionResponse = part.functionResponse;
+      const content = functionResponse.response?.content;
+      
+      if (!content || !Array.isArray(content)) {
+        // No content to transform, keep original
+        result.push(part);
+        continue;
+      }
+      
+      // Check if this is an error response
+      if (functionResponse.response?.isError) {
+        const errorText = content.find(item => this.isTextContent(item))?.text || 'Unknown error';
+        result.push({ text: `Error from ${this.serverToolName}: ${errorText}` });
+        hasTransformedContent = true;
+        continue;
+      }
+      
+      // Reset for this part
+      currentPartHasMedia = false;
+      currentPartItems = [];
+      
+      // Transform each content item into a separate Part
+      for (const item of content) {
+        if (this.isTextContent(item)) {
+          currentPartItems.push({ text: item.text });
+          hasTransformedContent = true;
+        } else if (this.isMediaContent(item)) {
+          // Validate media data before using
+          if (!item.data || !item.mimeType || 
+              typeof item.data !== 'string' || 
+              typeof item.mimeType !== 'string') {
+            currentPartItems.push({ text: '[Invalid media: missing data or mimeType]' });
+            hasTransformedContent = true;
+            continue;
+          }
+          
+          currentPartHasMedia = true;
+          hasTransformedContent = true;
+          currentPartItems.push({
+            inlineData: {
+              data: item.data,
+              mimeType: item.mimeType,
+            },
+          });
+        } else if (this.isResourceContent(item)) {
+          // Handle embedded resource content
+          const resource = item.resource;
+          if (resource.blob && resource.mimeType) {
+            // Resource has binary data
+            currentPartHasMedia = true;
+            hasTransformedContent = true;
+            currentPartItems.push({
+              inlineData: {
+                data: resource.blob,
+                mimeType: resource.mimeType,
+              },
+            });
+          } else if (resource.text) {
+            // Resource has text data
+            currentPartItems.push({ text: `[Resource: ${resource.uri}]\n${resource.text}` });
+            hasTransformedContent = true;
+          } else {
+            // Resource only has URI
+            currentPartItems.push({ text: `[Resource: ${resource.uri}]` });
+            hasTransformedContent = true;
+          }
+        } else if (item && typeof item === 'object' && 'type' in item) {
+          const itemType = (item as Record<string, unknown>).type;
+          // Check if this is an invalid media type (has media type but missing/invalid data)
+          if (typeof itemType === 'string' && MCP_MEDIA_TYPES.includes(itemType as McpMediaType)) {
+            currentPartItems.push({ text: '[Invalid media: missing data or mimeType]' });
+            hasTransformedContent = true;
+          } else {
+            // Unknown content type - include as text with warning
+            currentPartItems.push({ text: `[Unknown content type: ${itemType}]` });
+            hasTransformedContent = true;
+          }
+        }
+      }
+      
+      // If this part has media, prepend context
+      if (currentPartHasMedia && currentPartItems.length > 0) {
+        result.push({ 
+          text: `[Response from ${this.serverToolName} (${this.serverName} MCP Server)]` 
+        });
+      }
+      
+      // Add all items from this part
+      result.push(...currentPartItems);
+    }
+    
+    // If we transformed content, return the new Parts
+    // Otherwise, keep the original parts for backward compatibility
+    return hasTransformedContent ? result : responseParts;
+  }
+
+  /**
+   * Type guard for MCP text content
+   */
+  private isTextContent(item: unknown): item is { type: string; text: string } {
+    return (
+      typeof item === 'object' &&
+      item !== null &&
+      'type' in item &&
+      'text' in item &&
+      (item as Record<string, unknown>).type === 'text' &&
+      typeof (item as Record<string, unknown>).text === 'string'
+    );
+  }
+
+  /**
+   * Type guard for MCP resource content
+   */
+  private isResourceContent(item: unknown): item is { type: string; resource: { uri: string; mimeType?: string; text?: string; blob?: string } } {
+    return (
+      typeof item === 'object' &&
+      item !== null &&
+      'type' in item &&
+      'resource' in item &&
+      (item as Record<string, unknown>).type === 'resource' &&
+      typeof (item as Record<string, unknown>).resource === 'object' &&
+      typeof ((item as Record<string, unknown>).resource as Record<string, unknown>).uri === 'string'
+    );
+  }
+
+  /**
+   * Type guard for MCP media content (image, audio, video, pdf per MCP spec)
+   */
+  private isMediaContent(item: unknown): item is { type: string; data: string; mimeType: string } {
+    if (typeof item !== 'object' || item === null) {
+      return false;
+    }
+    
+    const obj = item as Record<string, unknown>;
+    
+    // Must have all required fields
+    if (!('type' in obj) || !('data' in obj) || !('mimeType' in obj)) {
+      return false;
+    }
+    
+    // Check if type is a valid media type
+    if (typeof obj.type !== 'string' || !MCP_MEDIA_TYPES.includes(obj.type as McpMediaType)) {
+      return false;
+    }
+    
+    // For type guard to work properly, data and mimeType must be non-null
+    // If they are null/undefined, it's not valid media content even if type is correct
+    return obj.data !== null && obj.data !== undefined && 
+           obj.mimeType !== null && obj.mimeType !== undefined;
   }
 }
 
@@ -152,15 +333,46 @@ function getStringifiedResultForDisplay(result: Part[]) {
     if (part.functionResponse) {
       const responseContent = part.functionResponse.response?.content;
       if (responseContent && Array.isArray(responseContent)) {
-        // Check if all parts in responseContent are simple TextParts
-        const allTextParts = responseContent.every(
-          (p: Part) => p.text !== undefined,
-        );
-        if (allTextParts) {
-          return responseContent.map((p: Part) => p.text).join('');
+        // Process each content item
+        const processedContent = responseContent.map((item: unknown) => {
+          if (!item || typeof item !== 'object') {
+            return item;
+          }
+          
+          const obj = item as Record<string, unknown>;
+          
+          // Handle MCP text content
+          if (obj.type === 'text' && obj.text) {
+            return obj.text;
+          }
+          // Handle MCP media content with user-friendly display
+          else if (obj.type === 'image' && obj.data && obj.mimeType) {
+            return `[Image: ${obj.mimeType}]`;
+          }
+          else if (obj.type === 'audio' && obj.data && obj.mimeType) {
+            return `[Audio: ${obj.mimeType}]`;
+          }
+          else if (obj.type === 'video' && obj.data && obj.mimeType) {
+            return `[Video: ${obj.mimeType}]`;
+          }
+          else if (obj.type === 'pdf' && obj.data && obj.mimeType) {
+            return `[PDF document]`;
+          }
+          // Handle text-only Parts (backward compatibility)
+          else if (obj.text !== undefined) {
+            return obj.text;
+          }
+          // Unknown content type
+          return item;
+        });
+        
+        // If all items are strings, join them
+        if (processedContent.every((item: unknown) => typeof item === 'string')) {
+          return processedContent.join('\n');
         }
-        // If not all simple text parts, return the array of these content parts for JSON stringification
-        return responseContent;
+        
+        // Otherwise return the processed array
+        return processedContent;
       }
 
       // If no content, or not an array, or not a functionResponse, stringify the whole functionResponse part for inspection
