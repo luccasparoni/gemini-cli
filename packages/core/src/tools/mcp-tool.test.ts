@@ -131,16 +131,8 @@ describe('DiscoveredMCPTool', () => {
         success: true,
         details: 'executed',
       };
-      const mockFunctionResponseContent: Part[] = [
-        { text: JSON.stringify(mockToolSuccessResultObject) },
-      ];
       const mockMcpToolResponseParts: Part[] = [
-        {
-          functionResponse: {
-            name: serverToolName,
-            response: { content: mockFunctionResponseContent },
-          },
-        },
+        { text: JSON.stringify(mockToolSuccessResultObject) },
       ];
       mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
 
@@ -149,7 +141,12 @@ describe('DiscoveredMCPTool', () => {
       expect(mockCallTool).toHaveBeenCalledWith([
         { name: serverToolName, args: params },
       ]);
-      expect(toolResult.llmContent).toEqual(mockMcpToolResponseParts);
+      expect(toolResult.llmContent).toEqual([
+        {
+          text: `Response from tool ${serverToolName} from ${serverName} MCP Server:`,
+        },
+        ...mockMcpToolResponseParts,
+      ]);
 
       const stringifiedResponseContent = JSON.stringify(
         mockToolSuccessResultObject,
@@ -169,7 +166,43 @@ describe('DiscoveredMCPTool', () => {
       const mockMcpToolResponsePartsEmpty: Part[] = [];
       mockCallTool.mockResolvedValue(mockMcpToolResponsePartsEmpty);
       const toolResult: ToolResult = await tool.execute(params);
-      expect(toolResult.returnDisplay).toBe('```json\n[]\n```');
+      expect(toolResult.returnDisplay).toBe('Tool returned no output.');
+    });
+
+    it('should handle unwrapped parts and add source message for the model', async () => {
+      const tool = new DiscoveredMCPTool(
+        mockCallableToolInstance,
+        serverName,
+        serverToolName,
+        baseDescription,
+        inputSchema,
+      );
+      const params = { param: 'testValue' };
+      const mockMcpToolResponseParts: Part[] = [
+        { text: 'Here is the image you requested.' },
+        {
+          inlineData: {
+            mimeType: 'image/png',
+            data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+
+      const toolResult: ToolResult = await tool.execute(params);
+
+      // 1. Check the content for the LLM
+      expect(toolResult.llmContent).toEqual([
+        {
+          text: `Response from tool ${serverToolName} from ${serverName} MCP Server:`,
+        },
+        ...mockMcpToolResponseParts,
+      ]);
+
+      // 2. Check the display string for the user
+      expect(toolResult.returnDisplay).toBe(
+        'Here is the image you requested.\n[Image Content: image/png]',
+      );
     });
 
     it('should propagate rejection if mcpTool.callTool rejects', async () => {

@@ -26,7 +26,12 @@ import { AuthProviderType, MCPServerConfig } from '../config/config.js';
 import { GoogleCredentialProvider } from '../mcp/google-auth-provider.js';
 import { DiscoveredMCPTool } from './mcp-tool.js';
 
-import { FunctionDeclaration, mcpToTool } from '@google/genai';
+import {
+  FunctionDeclaration,
+  mcpToTool,
+  FunctionCall,
+  Part,
+} from '@google/genai';
 import { ToolRegistry } from './tool-registry.js';
 import { PromptRegistry } from '../prompts/prompt-registry.js';
 import { MCPOAuthProvider } from '../mcp/oauth-provider.js';
@@ -419,7 +424,28 @@ export async function discoverTools(
   mcpClient: Client,
 ): Promise<DiscoveredMCPTool[]> {
   try {
-    const mcpCallableTool = mcpToTool(mcpClient);
+    // WORKAROUND: The GenAI SDK's `mcpToTool` currently wraps all responses
+    // in a `functionResponse`, which prevents the model from processing rich
+    // content like images. This custom implementation bypasses that wrapper.
+    // This should be replaced with the official SDK method once it supports
+    // returning raw `Part` objects directly.
+    const mcpCallableTool = {
+      callTool: async (functionCalls: FunctionCall[]): Promise<Part[]> => {
+        const call = functionCalls[0];
+        const result = (await mcpClient.callTool(
+          {
+            name: call.name!,
+            arguments: call.args ?? {},
+          },
+          undefined, // no schema validation
+          {
+            timeout: mcpServerConfig.timeout ?? MCP_DEFAULT_TIMEOUT_MSEC,
+          },
+        )) as { content: Part[] };
+        return result.content;
+      },
+      tool: async () => mcpToTool(mcpClient).tool(),
+    };
     const tool = await mcpCallableTool.tool();
 
     if (!Array.isArray(tool.functionDeclarations)) {
@@ -437,7 +463,7 @@ export async function discoverTools(
           new DiscoveredMCPTool(
             mcpCallableTool,
             mcpServerName,
-            funcDecl.name!,
+            funcDecl.name ?? '',
             funcDecl.description ?? '',
             funcDecl.parametersJsonSchema ?? { type: 'object', properties: {} },
             mcpServerConfig.timeout ?? MCP_DEFAULT_TIMEOUT_MSEC,

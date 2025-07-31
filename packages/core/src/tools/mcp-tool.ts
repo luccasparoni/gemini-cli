@@ -114,70 +114,85 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
       },
     ];
 
-    const responseParts: Part[] = await this.mcpTool.callTool(functionCalls);
+    const rawResponseParts = await this.mcpTool.callTool(functionCalls);
+    const responseParts = normalizeResponseParts(rawResponseParts);
+
+    const responseWithSource: Part[] = [
+      {
+        text: `Response from tool ${this.serverToolName} from ${this.serverName} MCP Server:`,
+      },
+      ...responseParts,
+    ];
 
     return {
-      llmContent: responseParts,
+      llmContent: responseWithSource,
       returnDisplay: getStringifiedResultForDisplay(responseParts),
     };
   }
 }
 
 /**
- * Processes an array of `Part` objects, primarily from a tool's execution result,
- * to generate a user-friendly string representation, typically for display in a CLI.
- *
- * The `result` array can contain various types of `Part` objects:
- * 1. `FunctionResponse` parts:
- *    - If the `response.content` of a `FunctionResponse` is an array consisting solely
- *      of `TextPart` objects, their text content is concatenated into a single string.
- *      This is to present simple textual outputs directly.
- *    - If `response.content` is an array but contains other types of `Part` objects (or a mix),
- *      the `content` array itself is preserved. This handles structured data like JSON objects or arrays
- *      returned by a tool.
- *    - If `response.content` is not an array or is missing, the entire `functionResponse`
- *      object is preserved.
- * 2. Other `Part` types (e.g., `TextPart` directly in the `result` array):
- *    - These are preserved as is.
- *
- * All processed parts are then collected into an array, which is JSON.stringify-ed
- * with indentation and wrapped in a markdown JSON code block.
+ * A helper function to handle servers that incorrectly serialize a Part[]
+ * into a JSON string and return it as a single text part.
  */
-function getStringifiedResultForDisplay(result: Part[]) {
-  if (!result || result.length === 0) {
-    return '```json\n[]\n```';
-  }
+function normalizeResponseParts(parts: Part[]): Part[] {
+  // We only care about the case where the server sent a single text part.
+  if (parts.length === 1 && parts[0].text) {
+    try {
+      const parsed = JSON.parse(parts[0].text);
 
-  const processFunctionResponse = (part: Part) => {
-    if (part.functionResponse) {
-      const responseContent = part.functionResponse.response?.content;
-      if (responseContent && Array.isArray(responseContent)) {
-        // Check if all parts in responseContent are simple TextParts
-        const allTextParts = responseContent.every(
-          (p: Part) => p.text !== undefined,
-        );
-        if (allTextParts) {
-          return responseContent.map((p: Part) => p.text).join('');
+      // We only act if the parsed result is a non-null object (which includes arrays).
+      // If it's a string, number, or boolean, we treat it as literal text and do nothing.
+      if (typeof parsed === 'object' && parsed !== null) {
+        // If it's an array, we assume it's the Part array we want.
+        if (Array.isArray(parsed)) {
+          return parsed as Part[];
         }
-        // If not all simple text parts, return the array of these content parts for JSON stringification
-        return responseContent;
+
+        // If it's a single object that looks like a Part, wrap it in an array.
+        if ('inlineData' in parsed || 'text' in parsed) {
+          return [parsed as Part];
+        }
       }
-
-      // If no content, or not an array, or not a functionResponse, stringify the whole functionResponse part for inspection
-      return part.functionResponse;
+    } catch (e) {
+      // The text was not valid JSON. It's just plain text.
+      // We do nothing and fall through to return the original parts.
     }
-    return part; // Fallback for unexpected structure or non-FunctionResponsePart
-  };
-
-  const processedResults =
-    result.length === 1
-      ? processFunctionResponse(result[0])
-      : result.map(processFunctionResponse);
-  if (typeof processedResults === 'string') {
-    return processedResults;
   }
 
-  return '```json\n' + JSON.stringify(processedResults, null, 2) + '\n```';
+  // If any of the conditions fail, return the original parts unchanged.
+  return parts;
+}
+
+/**
+ * Processes an array of `Part` objects from a tool's execution result
+ * to generate a user-friendly string representation for display in a CLI.
+ *
+ * - `text` parts are concatenated.
+ * - `inlineData` parts (like images) are represented by a placeholder.
+ * - Other parts are stringified as JSON.
+ *
+ * @param result The array of `Part` objects to process.
+ * @returns A string formatted for display.
+ */
+function getStringifiedResultForDisplay(result: Part[]): string {
+  if (!result || result.length === 0) {
+    return 'Tool returned no output.';
+  }
+
+  const displayParts: string[] = [];
+
+  for (const part of result) {
+    if (part.text) {
+      displayParts.push(part.text);
+    } else if (part.inlineData) {
+      displayParts.push(`[Image Content: ${part.inlineData.mimeType}]`);
+    } else {
+      displayParts.push('```json\n' + JSON.stringify(part, null, 2) + '\n```');
+    }
+  }
+
+  return displayParts.join('\n');
 }
 
 /** Visible for testing */
