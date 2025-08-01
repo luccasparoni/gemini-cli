@@ -117,6 +117,7 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
     const rawResponseParts = await this.mcpTool.callTool(functionCalls);
     const responseParts = normalizeResponseParts(rawResponseParts);
 
+    // Add a source message for the model to provide context.
     const responseWithSource: Part[] = [
       {
         text: `Response from tool ${this.serverToolName} from ${this.serverName} MCP Server:`,
@@ -132,36 +133,80 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
 }
 
 /**
- * A helper function to handle servers that incorrectly serialize a Part[]
- * into a JSON string and return it as a single text part.
+ * A helper function to handle various formats of tool responses and normalize
+ * them into the standard `Part[]` format that the SDK expects.
  */
-function normalizeResponseParts(parts: Part[]): Part[] {
-  // We only care about the case where the server sent a single text part.
-  if (parts.length === 1 && parts[0].text) {
+function normalizeResponseParts(rawParts: Part[]): Part[] {
+  // Start by filtering out any null/undefined entries.
+  const validParts = rawParts.filter((p): p is Part => !!p);
+
+  let itemsToProcess: unknown[];
+
+  // Case 1: The response is a single text part containing a stringified
+  // JSON array of parts.
+  if (validParts.length === 1 && validParts[0].text) {
     try {
-      const parsed = JSON.parse(parts[0].text);
-
-      // We only act if the parsed result is a non-null object (which includes arrays).
-      // If it's a string, number, or boolean, we treat it as literal text and do nothing.
-      if (typeof parsed === 'object' && parsed !== null) {
-        // If it's an array, we assume it's the Part array we want.
-        if (Array.isArray(parsed)) {
-          return parsed as Part[];
-        }
-
-        // If it's a single object that looks like a Part, wrap it in an array.
-        if ('inlineData' in parsed || 'text' in parsed) {
-          return [parsed as Part];
-        }
-      }
-    } catch (e) {
-      // The text was not valid JSON. It's just plain text.
-      // We do nothing and fall through to return the original parts.
+      const parsed = JSON.parse(validParts[0].text);
+      itemsToProcess = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (_e) {
+      // It's just a regular text part, not JSON.
+      return validParts;
     }
+  } else if (validParts.every((p) => p.text)) {
+    // Case 2: The response is an array of text parts, each containing
+    // a stringified JSON object.
+    itemsToProcess = validParts.map((p) => {
+      try {
+        return JSON.parse(p.text!);
+      } catch (_e) {
+        return p;
+      }
+    });
+  } else {
+    // It's already an array of objects.
+    itemsToProcess = validParts;
   }
 
-  // If any of the conditions fail, return the original parts unchanged.
-  return parts;
+  // Transform each item from the MCP spec format to the SDK format.
+  return itemsToProcess
+    .map((item: unknown): Part | null => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      // Case B: An MCP-spec object that needs transformation.
+      const mcpPart = item as {
+        type?: string;
+        data?: string;
+        mimeType?: string;
+        text?: string;
+      };
+
+      if (
+        (mcpPart.type === 'image' ||
+          mcpPart.type === 'audio' ||
+          mcpPart.type === 'video') &&
+        mcpPart.data &&
+        mcpPart.mimeType
+      ) {
+        return {
+          inlineData: {
+            data: mcpPart.data,
+            mimeType: mcpPart.mimeType,
+          },
+        };
+      }
+
+      if (mcpPart.type === 'text' && typeof mcpPart.text === 'string') {
+        return {
+          text: mcpPart.text,
+        };
+      }
+
+      // Case A or C: Already a valid SDK Part or some other object.
+      return item as Part;
+    })
+    .filter((p): p is Part => p !== null);
 }
 
 /**
@@ -183,10 +228,25 @@ function getStringifiedResultForDisplay(result: Part[]): string {
   const displayParts: string[] = [];
 
   for (const part of result) {
+    const toolError = part as { isError?: boolean; text?: string };
+    // The SDK doesn't have isError on the type, so we cast to a safe type.
+    if (toolError.isError) {
+      displayParts.push(`Tool Error: ${toolError.text ?? ''}`);
+      continue;
+    }
+
     if (part.text) {
       displayParts.push(part.text);
     } else if (part.inlineData) {
-      displayParts.push(`[Image Content: ${part.inlineData.mimeType}]`);
+      const mimeType = part.inlineData.mimeType ?? 'unknown';
+      const type = mimeType.startsWith('audio/')
+        ? 'Audio'
+        : mimeType.startsWith('image/')
+          ? 'Image'
+          : mimeType.startsWith('video/')
+            ? 'Video'
+            : 'File';
+      displayParts.push(`[${type} Content: ${mimeType}]`);
     } else {
       displayParts.push('```json\n' + JSON.stringify(part, null, 2) + '\n```');
     }
