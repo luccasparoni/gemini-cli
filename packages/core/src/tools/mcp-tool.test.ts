@@ -128,7 +128,17 @@ describe('DiscoveredMCPTool', () => {
       );
       const params = { param: 'testValue' };
       const mockMcpToolResponseParts: Part[] = [{ text: 'tool response' }];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
 
@@ -158,7 +168,17 @@ describe('DiscoveredMCPTool', () => {
           },
         },
       ];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       expect(toolResult.llmContent).toEqual([
@@ -187,7 +207,17 @@ describe('DiscoveredMCPTool', () => {
           },
         },
       ];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       expect(toolResult.llmContent).toEqual([
@@ -217,7 +247,17 @@ describe('DiscoveredMCPTool', () => {
           },
         },
       ];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       expect(toolResult.llmContent).toEqual([
@@ -254,7 +294,17 @@ describe('DiscoveredMCPTool', () => {
           },
         },
       ];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       expect(toolResult.llmContent).toEqual([
@@ -280,7 +330,17 @@ describe('DiscoveredMCPTool', () => {
       const mockMcpToolResponseParts: Part[] = [
         { unknownPart: { data: 'some-data' } } as any,
       ];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       expect(toolResult.llmContent).toEqual([
@@ -310,7 +370,17 @@ describe('DiscoveredMCPTool', () => {
         },
       ]);
       const mockMcpToolResponseParts: Part[] = [{ text: stringifiedParts }];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       const expectedParts: Part[] = [
@@ -339,13 +409,20 @@ describe('DiscoveredMCPTool', () => {
         inputSchema,
       );
       const params = { param: 'testValue' };
-      // This is a made-up error structure based on the user's request.
-      // The actual implementation of `isError` is not defined in the SDK,
-      // so we are testing the graceful fallback.
       const mockMcpToolResponseParts: Part[] = [
         { isError: true, text: 'The tool failed to execute.' } as any,
       ];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       expect(toolResult.llmContent).toEqual([
@@ -379,8 +456,18 @@ describe('DiscoveredMCPTool', () => {
           text: 'Here is your image.',
         },
       ];
-      // Simulate the server returning a direct array of MCP-spec objects
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      // Simulate the SDK wrapping the tool's response
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
 
@@ -436,7 +523,18 @@ describe('DiscoveredMCPTool', () => {
         { text: JSON.stringify({ type: 'text', text: 'line 1' }) },
         { text: JSON.stringify({ type: 'text', text: 'line 2' }) },
       ];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      // Simulate the SDK wrapping the tool's response
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       const expectedParts: Part[] = [{ text: 'line 1' }, { text: 'line 2' }];
@@ -460,7 +558,17 @@ describe('DiscoveredMCPTool', () => {
       );
       const params = { param: 'testValue' };
       const mockMcpToolResponseParts: Part[] = [];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
 
@@ -483,7 +591,17 @@ describe('DiscoveredMCPTool', () => {
       const params = { param: 'testValue' };
       const malformedJson = '{ "text": "this is not valid json';
       const mockMcpToolResponseParts: Part[] = [{ text: malformedJson }];
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
 
@@ -511,7 +629,17 @@ describe('DiscoveredMCPTool', () => {
         { text: 'line 2' },
         undefined,
       ] as any;
-      mockCallTool.mockResolvedValue(mockMcpToolResponseParts);
+      const sdkWrappedResponse = [
+        {
+          functionResponse: {
+            name: serverToolName,
+            response: {
+              content: mockMcpToolResponseParts,
+            },
+          },
+        },
+      ];
+      mockCallTool.mockResolvedValue(sdkWrappedResponse);
 
       const toolResult: ToolResult = await tool.execute(params);
       const expectedParts: Part[] = [{ text: 'line 1' }, { text: 'line 2' }];

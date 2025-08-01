@@ -29,8 +29,6 @@ import { DiscoveredMCPTool } from './mcp-tool.js';
 import {
   FunctionDeclaration,
   mcpToTool,
-  FunctionCall,
-  Part,
 } from '@google/genai';
 import { ToolRegistry } from './tool-registry.js';
 import { PromptRegistry } from '../prompts/prompt-registry.js';
@@ -424,28 +422,7 @@ export async function discoverTools(
   mcpClient: Client,
 ): Promise<DiscoveredMCPTool[]> {
   try {
-    // WORKAROUND: The GenAI SDK's `mcpToTool` currently wraps all responses
-    // in a `functionResponse`, which prevents the model from processing rich
-    // content like images. This custom implementation bypasses that wrapper.
-    // This should be replaced with the official SDK method once it supports
-    // returning raw `Part` objects directly.
-    const mcpCallableTool = {
-      callTool: async (functionCalls: FunctionCall[]): Promise<Part[]> => {
-        const call = functionCalls[0];
-        const result = (await mcpClient.callTool(
-          {
-            name: call.name!,
-            arguments: call.args ?? {},
-          },
-          undefined, // no schema validation
-          {
-            timeout: mcpServerConfig.timeout ?? MCP_DEFAULT_TIMEOUT_MSEC,
-          },
-        )) as { content: Part[] };
-        return result.content;
-      },
-      tool: async () => mcpToTool(mcpClient).tool(),
-    };
+    const mcpCallableTool = mcpToTool(mcpClient);
     const tool = await mcpCallableTool.tool();
 
     if (!Array.isArray(tool.functionDeclarations)) {
