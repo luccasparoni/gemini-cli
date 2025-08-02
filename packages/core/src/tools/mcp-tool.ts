@@ -117,16 +117,33 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
     const rawResponseParts = await this.mcpTool.callTool(functionCalls);
     const responseParts = normalizeResponseParts(rawResponseParts);
 
-    // Add a source message for the model to provide context.
-    const responseWithSource: Part[] = [
-      {
-        text: `Response from tool ${this.serverToolName} from ${this.serverName} MCP Server:`,
-      },
-      ...responseParts,
-    ];
+    // Check if the tool returned an error.
+    const errorPart = responseParts.find(
+      (p) => (p as { isError?: boolean }).isError,
+    );
+
+    let llmContent: Part[];
+
+    if (errorPart) {
+      const errorMessage =
+        errorPart.text ?? JSON.stringify(errorPart, null, 2);
+      llmContent = [
+        {
+          text: `The tool execution for ${this.serverToolName} failed with the following error: ${errorMessage}`,
+        },
+      ];
+    } else {
+      // Add a source message for the model to provide context.
+      llmContent = [
+        {
+          text: `Response from tool ${this.serverToolName} from ${this.serverName} MCP Server:`,
+        },
+        ...responseParts,
+      ];
+    }
 
     return {
-      llmContent: responseWithSource,
+      llmContent: llmContent,
       returnDisplay: getStringifiedResultForDisplay(responseParts),
     };
   }
@@ -143,41 +160,53 @@ function normalizeResponseParts(
     return [];
   }
 
-  let partsToProcess = rawParts.filter((p): p is Part => !!p);
+  const unwrappedParts = unwrapFunctionResponse(rawParts);
+  const deserializedItems = deserializeParts(unwrappedParts);
+  const sdkParts = transformPartsToSdkFormat(deserializedItems);
 
-  // Step 1: Unwrap the functionResponse wrapper from the SDK, if it exists.
-  // There is only one layer of wrapping.
+  return sdkParts;
+}
+
+/**
+ * Unwraps the `functionResponse` wrapper from the SDK if it exists.
+ * @param parts The initial parts array from the SDK.
+ * @returns The nested `content` if it exists, otherwise the original parts.
+ */
+function unwrapFunctionResponse(parts: Part[]): Part[] {
   if (
-    partsToProcess.length === 1 &&
-    partsToProcess[0].functionResponse &&
-    typeof partsToProcess[0].functionResponse.response === 'object' &&
-    partsToProcess[0].functionResponse.response !== null &&
-    'content' in partsToProcess[0].functionResponse.response
+    parts.length === 1 &&
+    parts[0].functionResponse &&
+    typeof parts[0].functionResponse.response === 'object' &&
+    parts[0].functionResponse.response !== null &&
+    'content' in parts[0].functionResponse.response
   ) {
-    const nestedContent = (
-      partsToProcess[0].functionResponse.response as { content: Part[] }
-    ).content;
-    partsToProcess = nestedContent;
+    return (parts[0].functionResponse.response as { content: Part[] }).content;
   }
+  return parts;
+}
 
-  // Step 2: Normalize the content that was inside the wrapper (or the original
-  // content if there was no wrapper).
-  let itemsToProcess: unknown[];
-
+/**
+ * Deserializes parts that may be in a stringified JSON format.
+ * @param parts The array of parts to process.
+ * @returns An array of parsed, unknown objects.
+ */
+function deserializeParts(parts: Part[]): unknown[] {
   // Case A: The response is a single text part containing a stringified
   // JSON array of parts (legacy format).
-  if (partsToProcess.length === 1 && partsToProcess[0].text) {
+  if (parts.length === 1 && parts[0].text) {
     try {
-      const parsed = JSON.parse(partsToProcess[0].text);
-      itemsToProcess = Array.isArray(parsed) ? parsed : [parsed];
+      const parsed = JSON.parse(parts[0].text);
+      return Array.isArray(parsed) ? parsed : [parsed];
     } catch (_e) {
       // It's just a regular text part, not JSON.
-      return partsToProcess;
+      return parts;
     }
-  } else if (partsToProcess.every((p) => p && p.text)) {
-    // Case B: The response is an array of text parts, each containing
-    // a stringified JSON object (legacy format).
-    itemsToProcess = partsToProcess.map((p) => {
+  }
+
+  // Case B: The response is an array of text parts, each containing
+  // a stringified JSON object (legacy format).
+  if (parts.every((p) => p && p.text)) {
+    return parts.map((p) => {
       try {
         return JSON.parse(p.text!);
       } catch (_e) {
@@ -185,51 +214,71 @@ function normalizeResponseParts(
         return p;
       }
     });
-  } else {
-    // Case C: It's already an array of Part-like objects.
-    itemsToProcess = partsToProcess;
   }
 
-  // Final transformation: Ensure every item is a valid Gemini SDK Part.
-  // This handles MCP-spec to Gemini-spec conversion.
-  return itemsToProcess
+  // Case C: It's already an array of Part-like objects.
+  return parts;
+}
+
+// Helper types and type guards for robust type checking.
+type McpPart = {
+  type: 'image' | 'audio' | 'video' | 'text';
+  data?: string;
+  mimeType?: string;
+  text?: string;
+};
+
+function isMcpMediaPart(item: any): item is McpPart {
+  return (
+    item &&
+    (item.type === 'image' || item.type === 'audio' || item.type === 'video') &&
+    typeof item.data === 'string' &&
+    typeof item.mimeType === 'string'
+  );
+}
+
+function isMcpTextPart(item: any): item is McpPart {
+  return item && item.type === 'text' && typeof item.text === 'string';
+}
+
+function isSdkPart(item: any): item is Part {
+  return (
+    item &&
+    ('text' in item || 'inlineData' in item || 'functionCall' in item)
+  );
+}
+
+/**
+ * Transforms an array of parsed objects into the Gemini SDK `Part` format.
+ * @param items The array of unknown items to transform.
+ * @returns A clean array of SDK `Part` objects.
+ */
+function transformPartsToSdkFormat(items: unknown[]): Part[] {
+  return items
     .map((item: unknown): Part | null => {
       if (!item || typeof item !== 'object') {
         return null;
       }
 
-      const mcpPart = item as {
-        type?: string;
-        data?: string;
-        mimeType?: string;
-        text?: string;
-      };
-
       // Handle MCP-spec objects that need transformation FIRST.
-      if (
-        (mcpPart.type === 'image' ||
-          mcpPart.type === 'audio' ||
-          mcpPart.type === 'video') &&
-        mcpPart.data &&
-        mcpPart.mimeType
-      ) {
+      if (isMcpMediaPart(item)) {
         return {
           inlineData: {
-            data: mcpPart.data,
-            mimeType: mcpPart.mimeType,
+            data: item.data!,
+            mimeType: item.mimeType!,
           },
         };
       }
 
-      if (mcpPart.type === 'text' && typeof mcpPart.text === 'string') {
+      if (isMcpTextPart(item)) {
         return {
-          text: mcpPart.text,
+          text: item.text!,
         };
       }
 
-      // If it's not a transformable MCP part, assume it's already a valid SDK Part.
-      if ('text' in item || 'inlineData' in item || 'functionCall' in item) {
-        return item as Part;
+      // If it's not a transformable MCP part, check if it's already a valid SDK Part.
+      if (isSdkPart(item)) {
+        return item;
       }
 
       // Pass through any other unknown format.

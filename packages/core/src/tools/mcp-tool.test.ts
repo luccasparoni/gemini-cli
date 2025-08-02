@@ -409,8 +409,9 @@ describe('DiscoveredMCPTool', () => {
         inputSchema,
       );
       const params = { param: 'testValue' };
+      const errorMessage = 'The tool failed to execute.';
       const mockMcpToolResponseParts: Part[] = [
-        { isError: true, text: 'The tool failed to execute.' } as any,
+        { isError: true, text: errorMessage } as any,
       ];
       const sdkWrappedResponse = [
         {
@@ -427,13 +428,10 @@ describe('DiscoveredMCPTool', () => {
       const toolResult: ToolResult = await tool.execute(params);
       expect(toolResult.llmContent).toEqual([
         {
-          text: `Response from tool ${serverToolName} from ${serverName} MCP Server:`,
+          text: `The tool execution for ${serverToolName} failed with the following error: ${errorMessage}`,
         },
-        ...mockMcpToolResponseParts,
       ]);
-      expect(toolResult.returnDisplay).toBe(
-        'Tool Error: The tool failed to execute.',
-      );
+      expect(toolResult.returnDisplay).toBe(`Tool Error: ${errorMessage}`);
     });
 
     it('should handle spec-compliant MCP responses', async () => {
