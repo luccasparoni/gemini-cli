@@ -60,7 +60,7 @@ Each of these tools extends `BaseTool` and implements the required methods for i
     - The user's decision (e.g., proceed, cancel) is sent back to the core.
 6.  **Execution:** If validated and confirmed (or if no confirmation is needed), the core calls the tool's `execute()` method with the provided arguments and an `AbortSignal` (for potential cancellation).
 7.  **Result Processing:** The `ToolResult` from `execute()` is received by the core.
-8.  **Response to Model:** The `llmContent` from the `ToolResult` is packaged as a `FunctionResponse` and sent back to the Gemini model so it can continue generating a user-facing response.
+8.  **Response to Model:** The `llmContent` from the `ToolResult` is processed by a robust normalization pipeline. This is a critical step that allows tools to return rich media (images, audio, etc.) by handling various response formats, including the native Gemini SDK `Part[]` array and the official MCP specification format. Any tool errors are also gracefully formatted into natural language. The final, clean `Part` array is then sent back to the Gemini model so it can use the tool's output as context for its next turn.
 9.  **Display to User:** The `returnDisplay` from the `ToolResult` is sent to the CLI to show the user what the tool did.
 
 ## Extending with Custom Tools

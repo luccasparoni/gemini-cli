@@ -420,10 +420,103 @@ Upon confirmation (or trust bypass):
 
 ### 4. Response Handling
 
-The execution result contains:
+The primary goal of the Gemini CLI's tool system is to allow tools to return rich, structured content (like images, audio, video, or text files) that the Gemini model can use as context for its next turn. To achieve this, the CLI can process tool responses that adhere to two primary formats, in addition to several legacy formats for backward compatibility.
 
-- **`llmContent`:** Raw response parts for the language model's context
-- **`returnDisplay`:** Formatted output for user display (often JSON in markdown code blocks)
+#### Supported Response Formats
+
+To enable rich, multimodal responses (text, images, etc.), a tool's response must be an array of "Part" objects. The Gemini CLI is optimized to handle two primary formats, with a clear recommendation for developers.
+
+1.  **Recommended: Gemini SDK `Part[]` Format**
+
+    This is the native format used by the `@google/genai` SDK and is the **preferred and most direct way** to send rich content to the Gemini model. By formatting your response this way, you ensure maximum compatibility and avoid any intermediate transformation steps.
+
+    _Example (Returning text and an image):_
+
+    ```json
+    [
+      { "text": "Here is the generated image:" },
+      {
+        "inlineData": {
+          "data": "iVBORw0KGgo...",
+          "mimeType": "image/png"
+        }
+      }
+    ]
+    ```
+
+2.  **Alternative: Model Context Protocol (MCP) Specification Format**
+
+    The CLI also supports responses that adhere to the official MCP specification. This is useful if you are building a generic MCP server that needs to be compatible with other clients besides the Gemini CLI. The CLI will automatically detect this format and transform it into the native Gemini SDK format before sending it to the model.
+    - **Reference:** [MCP Server Specification (2025-06-18)](https://modelcontextprotocol.io/specification/2025-06-18/server/)
+
+    _Example (MCP Spec):_
+
+    ```json
+    [
+      { "type": "text", "text": "Here is the generated image:" },
+      {
+        "type": "image",
+        "data": "iVBORw0KGgo...",
+        "mimeType": "image/png"
+      }
+    ]
+    ```
+
+#### Legacy Formats (Backward Compatibility)
+
+For backward compatibility, the CLI also handles legacy formats where tool responses were returned as stringified JSON.
+
+- **Legacy Case 1: Single Stringified JSON Array**
+
+  The entire response is a single text part containing a stringified JSON array of parts.
+
+  _Example:_
+
+  ```json
+  [
+    {
+      "text": "[{\"text\":\"Here is the generated image:\"},{\"inlineData\":{\"data\":\"iVBORw0KGgo...\",\"mimeType\":\"image/png\"}}]"
+    }
+  ]
+  ```
+
+- **Legacy Case 2: Line-by-Line Stringified JSON**
+
+  The response is an array of text parts, where each part is a stringified JSON object.
+
+  _Example:_
+
+  ```json
+  [
+    { "text": "{\"text\":\"Here is the generated image:\"}" },
+    {
+      "text": "{\"inlineData\":{\"data\":\"iVBORw0KGgo...\",\"mimeType\":\"image/png\"}}"
+    }
+  ]
+  ```
+
+The Gemini CLI's normalization pipeline automatically detects and parses these legacy formats, ensuring that older MCP servers continue to function correctly.
+
+#### Tool Error Handling
+
+If a tool needs to report an error, it can return a part with an `isError` flag. The Gemini CLI will detect this and format a specific, natural-language error message for the model's context.
+
+**Example Error Response from Tool:**
+
+```json
+{
+  "isError": true,
+  "text": "API key is invalid or has expired."
+}
+```
+
+**`llmContent` Sent to Model:**
+
+```
+The tool execution for `your-tool-name` failed with the following error: API key is invalid or has expired.
+```
+
+This prevents the model from being confused by raw error objects and allows it to correctly reason about the tool's failure.
 
 ## How to interact with your MCP server
 

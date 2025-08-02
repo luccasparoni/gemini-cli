@@ -125,8 +125,7 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
     let llmContent: Part[];
 
     if (errorPart) {
-      const errorMessage =
-        errorPart.text ?? JSON.stringify(errorPart, null, 2);
+      const errorMessage = errorPart.text ?? JSON.stringify(errorPart, null, 2);
       llmContent = [
         {
           text: `The tool execution for ${this.serverToolName} failed with the following error: ${errorMessage}`,
@@ -143,7 +142,7 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
     }
 
     return {
-      llmContent: llmContent,
+      llmContent,
       returnDisplay: getStringifiedResultForDisplay(responseParts),
     };
   }
@@ -153,9 +152,7 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
  * A helper function to handle various formats of tool responses and normalize
  * them into the standard `Part[]` format that the SDK expects.
  */
-function normalizeResponseParts(
-  rawParts: Part[] | null | undefined,
-): Part[] {
+function normalizeResponseParts(rawParts: Part[] | null | undefined): Part[] {
   if (!rawParts) {
     return [];
   }
@@ -228,24 +225,31 @@ type McpPart = {
   text?: string;
 };
 
-function isMcpMediaPart(item: any): item is McpPart {
+function isMcpMediaPart(item: unknown): item is McpPart {
+  if (typeof item !== 'object' || !item) {
+    return false;
+  }
+  const obj = item as Record<string, unknown>;
   return (
-    item &&
-    (item.type === 'image' || item.type === 'audio' || item.type === 'video') &&
-    typeof item.data === 'string' &&
-    typeof item.mimeType === 'string'
+    (obj.type === 'image' || obj.type === 'audio' || obj.type === 'video') &&
+    typeof obj.data === 'string' &&
+    typeof obj.mimeType === 'string'
   );
 }
 
-function isMcpTextPart(item: any): item is McpPart {
-  return item && item.type === 'text' && typeof item.text === 'string';
+function isMcpTextPart(item: unknown): item is McpPart {
+  if (typeof item !== 'object' || !item) {
+    return false;
+  }
+  const obj = item as Record<string, unknown>;
+  return obj.type === 'text' && typeof obj.text === 'string';
 }
 
-function isSdkPart(item: any): item is Part {
-  return (
-    item &&
-    ('text' in item || 'inlineData' in item || 'functionCall' in item)
-  );
+function isSdkPart(item: unknown): item is Part {
+  if (typeof item !== 'object' || !item) {
+    return false;
+  }
+  return 'text' in item || 'inlineData' in item || 'functionCall' in item;
 }
 
 /**
