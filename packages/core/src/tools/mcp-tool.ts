@@ -22,6 +22,99 @@ import {
 
 type ToolParams = Record<string, unknown>;
 
+/**
+ * Transforms the raw MCP content blocks from the SDK response into a
+ * standard GenAI Part array.
+ * @param sdkResponse The raw Part[] array from `mcpTool.callTool()`.
+ * @returns A clean Part[] array ready for the scheduler.
+ */
+function transformMcpContentToParts(sdkResponse: Part[]): Part[] {
+  const funcResponse = sdkResponse?.[0]?.functionResponse;
+  const mcpContent = funcResponse?.response?.content as Array<
+    Record<string, string | Record<string, string>>
+  >;
+  const toolName = funcResponse?.name || 'unknown tool';
+
+  if (!Array.isArray(mcpContent)) {
+    return [{ text: '[Error: Could not parse tool response]' }];
+  }
+
+  const transformed = mcpContent.flatMap(
+    (
+      block: Record<string, string | Record<string, string>>,
+    ): Part | Part[] | null => {
+      let actualBlock = block;
+      if (block.text && !block.type) {
+        try {
+          actualBlock = JSON.parse(block.text as string);
+        } catch (_e) {
+          return { text: block.text as string };
+        }
+      }
+      switch (actualBlock.type) {
+        case 'text':
+          return { text: actualBlock.text as string };
+
+        case 'image':
+        case 'audio':
+          return [
+            {
+              text: `[Tool '${toolName}' provided the following ${
+                actualBlock.type
+              } data with mime-type: ${actualBlock.mimeType as string}]`,
+            },
+            {
+              inlineData: {
+                mimeType: actualBlock.mimeType as string,
+                data: actualBlock.data as string,
+              },
+            },
+          ];
+
+        case 'resource':
+          if ((actualBlock.resource as Record<string, string>)?.text) {
+            return {
+              text: (actualBlock.resource as Record<string, string>)
+                .text as string,
+            };
+          }
+          if ((actualBlock.resource as Record<string, string>)?.blob) {
+            return [
+              {
+                text: `[Tool '${toolName}' provided the following embedded resource with mime-type: ${
+                  ((actualBlock.resource as Record<string, string>)
+                    .mimeType as string) || 'application/octet-stream'
+                }]`,
+              },
+              {
+                inlineData: {
+                  mimeType:
+                    ((actualBlock.resource as Record<string, string>)
+                      .mimeType as string) || 'application/octet-stream',
+                  data: (actualBlock.resource as Record<string, string>)
+                    .blob as string,
+                },
+              },
+            ];
+          }
+          return null;
+
+        case 'resource_link':
+          return {
+            text: `Resource Link: ${
+              (actualBlock.title as string) || (actualBlock.name as string)
+            } at ${actualBlock.uri as string}`,
+          };
+
+        default:
+          return null;
+      }
+    },
+  );
+
+  return transformed.filter((part): part is Part => part !== null);
+}
+
 export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
   private static readonly allowlist: Set<string> = new Set();
 
@@ -114,70 +207,62 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
       },
     ];
 
-    const responseParts: Part[] = await this.mcpTool.callTool(functionCalls);
+    const rawResponseParts = await this.mcpTool.callTool(functionCalls);
+    const transformedParts = transformMcpContentToParts(rawResponseParts);
 
     return {
-      llmContent: responseParts,
-      returnDisplay: getStringifiedResultForDisplay(responseParts),
+      llmContent: transformedParts,
+      returnDisplay: getStringifiedResultForDisplay(rawResponseParts),
     };
   }
 }
 
 /**
- * Processes an array of `Part` objects, primarily from a tool's execution result,
- * to generate a user-friendly string representation, typically for display in a CLI.
+ * Processes the raw response from the MCP tool to generate a clean,
+ * human-readable string for display in the CLI. It summarizes non-text
+ * content and presents text directly.
  *
- * The `result` array can contain various types of `Part` objects:
- * 1. `FunctionResponse` parts:
- *    - If the `response.content` of a `FunctionResponse` is an array consisting solely
- *      of `TextPart` objects, their text content is concatenated into a single string.
- *      This is to present simple textual outputs directly.
- *    - If `response.content` is an array but contains other types of `Part` objects (or a mix),
- *      the `content` array itself is preserved. This handles structured data like JSON objects or arrays
- *      returned by a tool.
- *    - If `response.content` is not an array or is missing, the entire `functionResponse`
- *      object is preserved.
- * 2. Other `Part` types (e.g., `TextPart` directly in the `result` array):
- *    - These are preserved as is.
- *
- * All processed parts are then collected into an array, which is JSON.stringify-ed
- * with indentation and wrapped in a markdown JSON code block.
+ * @param rawResponse The raw Part[] array from the GenAI SDK.
+ * @returns A formatted string representing the tool's output.
  */
-function getStringifiedResultForDisplay(result: Part[]) {
-  if (!result || result.length === 0) {
-    return '```json\n[]\n```';
+function getStringifiedResultForDisplay(rawResponse: Part[]): string {
+  // Safely extract the MCP content array.
+  const mcpContent = rawResponse?.[0]?.functionResponse?.response
+    ?.content as Array<Record<string, string | Record<string, string>>>;
+
+  if (!Array.isArray(mcpContent)) {
+    // Fallback for unexpected structures: pretty-print the raw response.
+    return '```json\n' + JSON.stringify(rawResponse, null, 2) + '\n```';
   }
 
-  const processFunctionResponse = (part: Part) => {
-    if (part.functionResponse) {
-      const responseContent = part.functionResponse.response?.content;
-      if (responseContent && Array.isArray(responseContent)) {
-        // Check if all parts in responseContent are simple TextParts
-        const allTextParts = responseContent.every(
-          (p: Part) => p.text !== undefined,
-        );
-        if (allTextParts) {
-          return responseContent.map((p: Part) => p.text).join('');
-        }
-        // If not all simple text parts, return the array of these content parts for JSON stringification
-        return responseContent;
+  const displayParts = mcpContent.map(
+    (block: Record<string, string | Record<string, string>>): string => {
+      switch (block.type) {
+        case 'text':
+          return block.text as string;
+        case 'image':
+          return `[Image: ${block.mimeType as string}]`;
+        case 'audio':
+          return `[Audio: ${block.mimeType as string}]`;
+        case 'resource_link':
+          return `[Link to ${
+            (block.title as string) || (block.name as string)
+          }: ${block.uri as string}]`;
+        case 'resource':
+          if ((block.resource as Record<string, string>)?.text) {
+            return (block.resource as Record<string, string>).text as string;
+          }
+          return `[Embedded Resource: ${
+            ((block.resource as Record<string, string>)?.mimeType as string) ||
+            'unknown type'
+          }]`;
+        default:
+          return `[Unknown content type: ${block.type as string}]`;
       }
+    },
+  );
 
-      // If no content, or not an array, or not a functionResponse, stringify the whole functionResponse part for inspection
-      return part.functionResponse;
-    }
-    return part; // Fallback for unexpected structure or non-FunctionResponsePart
-  };
-
-  const processedResults =
-    result.length === 1
-      ? processFunctionResponse(result[0])
-      : result.map(processFunctionResponse);
-  if (typeof processedResults === 'string') {
-    return processedResults;
-  }
-
-  return '```json\n' + JSON.stringify(processedResults, null, 2) + '\n```';
+  return displayParts.join('\n');
 }
 
 /** Visible for testing */
