@@ -582,6 +582,7 @@ All data returned from the tool is processed and sent to the model as context fo
 To return rich content, your tool's response must adhere to the MCP specification for a [`CallToolResult`](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-result). The `content` field of the result should be an array of `ContentBlock` objects. The Gemini CLI will correctly process this array, separating text from binary data and packaging it for the model.
 
 You can mix and match different content block types in the `content` array. The supported block types include:
+
 - `text`
 - `image`
 - `audio`
@@ -613,6 +614,7 @@ Here is an example of a valid JSON response from an MCP tool that returns both a
 ```
 
 When the Gemini CLI receives this response, it will:
+
 1.  Extract all the text and combine it into a single `functionResponse` part for the model.
 2.  Present the image data as a separate `inlineData` part.
 3.  Provide a clean, user-friendly summary in the CLI, indicating that both text and an image were received.

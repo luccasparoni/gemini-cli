@@ -21,99 +21,7 @@ import {
 } from '@google/genai';
 
 type ToolParams = Record<string, unknown>;
-
-/**
- * Transforms the raw MCP content blocks from the SDK response into a
- * standard GenAI Part array.
- * @param sdkResponse The raw Part[] array from `mcpTool.callTool()`.
- * @returns A clean Part[] array ready for the scheduler.
- */
-function transformMcpContentToParts(sdkResponse: Part[]): Part[] {
-  const funcResponse = sdkResponse?.[0]?.functionResponse;
-  const mcpContent = funcResponse?.response?.content as Array<
-    Record<string, string | Record<string, string>>
-  >;
-  const toolName = funcResponse?.name || 'unknown tool';
-
-  if (!Array.isArray(mcpContent)) {
-    return [{ text: '[Error: Could not parse tool response]' }];
-  }
-
-  const transformed = mcpContent.flatMap(
-    (
-      block: Record<string, string | Record<string, string>>,
-    ): Part | Part[] | null => {
-      let actualBlock = block;
-      if (block.text && !block.type) {
-        try {
-          actualBlock = JSON.parse(block.text as string);
-        } catch (_e) {
-          return { text: block.text as string };
-        }
-      }
-      switch (actualBlock.type) {
-        case 'text':
-          return { text: actualBlock.text as string };
-
-        case 'image':
-        case 'audio':
-          return [
-            {
-              text: `[Tool '${toolName}' provided the following ${
-                actualBlock.type
-              } data with mime-type: ${actualBlock.mimeType as string}]`,
-            },
-            {
-              inlineData: {
-                mimeType: actualBlock.mimeType as string,
-                data: actualBlock.data as string,
-              },
-            },
-          ];
-
-        case 'resource':
-          if ((actualBlock.resource as Record<string, string>)?.text) {
-            return {
-              text: (actualBlock.resource as Record<string, string>)
-                .text as string,
-            };
-          }
-          if ((actualBlock.resource as Record<string, string>)?.blob) {
-            return [
-              {
-                text: `[Tool '${toolName}' provided the following embedded resource with mime-type: ${
-                  ((actualBlock.resource as Record<string, string>)
-                    .mimeType as string) || 'application/octet-stream'
-                }]`,
-              },
-              {
-                inlineData: {
-                  mimeType:
-                    ((actualBlock.resource as Record<string, string>)
-                      .mimeType as string) || 'application/octet-stream',
-                  data: (actualBlock.resource as Record<string, string>)
-                    .blob as string,
-                },
-              },
-            ];
-          }
-          return null;
-
-        case 'resource_link':
-          return {
-            text: `Resource Link: ${
-              (actualBlock.title as string) || (actualBlock.name as string)
-            } at ${actualBlock.uri as string}`,
-          };
-
-        default:
-          return null;
-      }
-    },
-  );
-
-  return transformed.filter((part): part is Part => part !== null);
-}
+type McpContentBlock = Record<string, string | Record<string, string>>;
 
 export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
   private static readonly allowlist: Set<string> = new Set();
@@ -217,6 +125,99 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
   }
 }
 
+function transformTextBlock(block: McpContentBlock): Part {
+  return { text: block.text as string };
+}
+
+function transformImageAudioBlock(
+  block: McpContentBlock,
+  toolName: string,
+): Part[] {
+  return [
+    {
+      text: `[Tool '${toolName}' provided the following ${
+        block.type
+      } data with mime-type: ${block.mimeType as string}]`,
+    },
+    {
+      inlineData: {
+        mimeType: block.mimeType as string,
+        data: block.data as string,
+      },
+    },
+  ];
+}
+
+function transformResourceBlock(
+  block: McpContentBlock,
+  toolName: string,
+): Part | Part[] | null {
+  const resource = block.resource as McpContentBlock;
+  if (resource?.text) {
+    return { text: resource.text as string };
+  }
+  if (resource?.blob) {
+    const mimeType =
+      (resource.mimeType as string) || 'application/octet-stream';
+    return [
+      {
+        text: `[Tool '${toolName}' provided the following embedded resource with mime-type: ${mimeType}]`,
+      },
+      {
+        inlineData: {
+          mimeType,
+          data: resource.blob as string,
+        },
+      },
+    ];
+  }
+  return null;
+}
+
+function transformResourceLinkBlock(block: McpContentBlock): Part {
+  return {
+    text: `Resource Link: ${
+      (block.title as string) || (block.name as string)
+    } at ${block.uri as string}`,
+  };
+}
+
+/**
+ * Transforms the raw MCP content blocks from the SDK response into a
+ * standard GenAI Part array.
+ * @param sdkResponse The raw Part[] array from `mcpTool.callTool()`.
+ * @returns A clean Part[] array ready for the scheduler.
+ */
+function transformMcpContentToParts(sdkResponse: Part[]): Part[] {
+  const funcResponse = sdkResponse?.[0]?.functionResponse;
+  const mcpContent = funcResponse?.response?.content as McpContentBlock[];
+  const toolName = funcResponse?.name || 'unknown tool';
+
+  if (!Array.isArray(mcpContent)) {
+    return [{ text: '[Error: Could not parse tool response]' }];
+  }
+
+  const transformed = mcpContent.flatMap(
+    (block: McpContentBlock): Part | Part[] | null => {
+      switch (block.type) {
+        case 'text':
+          return transformTextBlock(block);
+        case 'image':
+        case 'audio':
+          return transformImageAudioBlock(block, toolName);
+        case 'resource':
+          return transformResourceBlock(block, toolName);
+        case 'resource_link':
+          return transformResourceLinkBlock(block);
+        default:
+          return null;
+      }
+    },
+  );
+
+  return transformed.filter((part): part is Part => part !== null);
+}
+
 /**
  * Processes the raw response from the MCP tool to generate a clean,
  * human-readable string for display in the CLI. It summarizes non-text
@@ -226,41 +227,37 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
  * @returns A formatted string representing the tool's output.
  */
 function getStringifiedResultForDisplay(rawResponse: Part[]): string {
-  // Safely extract the MCP content array.
   const mcpContent = rawResponse?.[0]?.functionResponse?.response
-    ?.content as Array<Record<string, string | Record<string, string>>>;
+    ?.content as McpContentBlock[];
 
   if (!Array.isArray(mcpContent)) {
-    // Fallback for unexpected structures: pretty-print the raw response.
     return '```json\n' + JSON.stringify(rawResponse, null, 2) + '\n```';
   }
 
-  const displayParts = mcpContent.map(
-    (block: Record<string, string | Record<string, string>>): string => {
-      switch (block.type) {
-        case 'text':
-          return block.text as string;
-        case 'image':
-          return `[Image: ${block.mimeType as string}]`;
-        case 'audio':
-          return `[Audio: ${block.mimeType as string}]`;
-        case 'resource_link':
-          return `[Link to ${
-            (block.title as string) || (block.name as string)
-          }: ${block.uri as string}]`;
-        case 'resource':
-          if ((block.resource as Record<string, string>)?.text) {
-            return (block.resource as Record<string, string>).text as string;
-          }
-          return `[Embedded Resource: ${
-            ((block.resource as Record<string, string>)?.mimeType as string) ||
-            'unknown type'
-          }]`;
-        default:
-          return `[Unknown content type: ${block.type as string}]`;
-      }
-    },
-  );
+  const displayParts = mcpContent.map((block: McpContentBlock): string => {
+    switch (block.type) {
+      case 'text':
+        return block.text as string;
+      case 'image':
+        return `[Image: ${block.mimeType as string}]`;
+      case 'audio':
+        return `[Audio: ${block.mimeType as string}]`;
+      case 'resource_link':
+        return `[Link to ${
+          (block.title as string) || (block.name as string)
+        }: ${block.uri as string}]`;
+      case 'resource':
+        if ((block.resource as McpContentBlock)?.text) {
+          return (block.resource as McpContentBlock).text as string;
+        }
+        return `[Embedded Resource: ${
+          ((block.resource as McpContentBlock)?.mimeType as string) ||
+          'unknown type'
+        }]`;
+      default:
+        return `[Unknown content type: ${block.type as string}]`;
+    }
+  });
 
   return displayParts.join('\n');
 }
