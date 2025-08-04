@@ -21,7 +21,40 @@ import {
 } from '@google/genai';
 
 type ToolParams = Record<string, unknown>;
-type McpContentBlock = Record<string, string | Record<string, string>>;
+
+// Discriminated union for MCP Content Blocks to ensure type safety.
+type McpTextBlock = {
+  type: 'text';
+  text: string;
+};
+
+type McpMediaBlock = {
+  type: 'image' | 'audio';
+  mimeType: string;
+  data: string;
+};
+
+type McpResourceBlock = {
+  type: 'resource';
+  resource: {
+    text?: string;
+    blob?: string;
+    mimeType?: string;
+  };
+};
+
+type McpResourceLinkBlock = {
+  type: 'resource_link';
+  uri: string;
+  title?: string;
+  name?: string;
+};
+
+type McpContentBlock =
+  | McpTextBlock
+  | McpMediaBlock
+  | McpResourceBlock
+  | McpResourceLinkBlock;
 
 export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
   private static readonly allowlist: Set<string> = new Set();
@@ -125,40 +158,39 @@ export class DiscoveredMCPTool extends BaseTool<ToolParams, ToolResult> {
   }
 }
 
-function transformTextBlock(block: McpContentBlock): Part {
-  return { text: block.text as string };
+function transformTextBlock(block: McpTextBlock): Part {
+  return { text: block.text };
 }
 
 function transformImageAudioBlock(
-  block: McpContentBlock,
+  block: McpMediaBlock,
   toolName: string,
 ): Part[] {
   return [
     {
       text: `[Tool '${toolName}' provided the following ${
         block.type
-      } data with mime-type: ${block.mimeType as string}]`,
+      } data with mime-type: ${block.mimeType}]`,
     },
     {
       inlineData: {
-        mimeType: block.mimeType as string,
-        data: block.data as string,
+        mimeType: block.mimeType,
+        data: block.data,
       },
     },
   ];
 }
 
 function transformResourceBlock(
-  block: McpContentBlock,
+  block: McpResourceBlock,
   toolName: string,
 ): Part | Part[] | null {
-  const resource = block.resource as McpContentBlock;
+  const resource = block.resource;
   if (resource?.text) {
-    return { text: resource.text as string };
+    return { text: resource.text };
   }
   if (resource?.blob) {
-    const mimeType =
-      (resource.mimeType as string) || 'application/octet-stream';
+    const mimeType = resource.mimeType || 'application/octet-stream';
     return [
       {
         text: `[Tool '${toolName}' provided the following embedded resource with mime-type: ${mimeType}]`,
@@ -166,7 +198,7 @@ function transformResourceBlock(
       {
         inlineData: {
           mimeType,
-          data: resource.blob as string,
+          data: resource.blob,
         },
       },
     ];
@@ -174,11 +206,9 @@ function transformResourceBlock(
   return null;
 }
 
-function transformResourceLinkBlock(block: McpContentBlock): Part {
+function transformResourceLinkBlock(block: McpResourceLinkBlock): Part {
   return {
-    text: `Resource Link: ${
-      (block.title as string) || (block.name as string)
-    } at ${block.uri as string}`,
+    text: `Resource Link: ${block.title || block.name} at ${block.uri}`,
   };
 }
 
@@ -237,25 +267,22 @@ function getStringifiedResultForDisplay(rawResponse: Part[]): string {
   const displayParts = mcpContent.map((block: McpContentBlock): string => {
     switch (block.type) {
       case 'text':
-        return block.text as string;
+        return block.text;
       case 'image':
-        return `[Image: ${block.mimeType as string}]`;
+        return `[Image: ${block.mimeType}]`;
       case 'audio':
-        return `[Audio: ${block.mimeType as string}]`;
+        return `[Audio: ${block.mimeType}]`;
       case 'resource_link':
-        return `[Link to ${
-          (block.title as string) || (block.name as string)
-        }: ${block.uri as string}]`;
+        return `[Link to ${block.title || block.name}: ${block.uri}]`;
       case 'resource':
-        if ((block.resource as McpContentBlock)?.text) {
-          return (block.resource as McpContentBlock).text as string;
+        if (block.resource?.text) {
+          return block.resource.text;
         }
         return `[Embedded Resource: ${
-          ((block.resource as McpContentBlock)?.mimeType as string) ||
-          'unknown type'
+          block.resource?.mimeType || 'unknown type'
         }]`;
       default:
-        return `[Unknown content type: ${block.type as string}]`;
+        return `[Unknown content type: ${(block as { type: string }).type}]`;
     }
   });
 
